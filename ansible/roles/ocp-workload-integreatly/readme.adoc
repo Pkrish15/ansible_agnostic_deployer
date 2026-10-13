@@ -3,20 +3,20 @@
 == Role overview
 
 * This role executes the following tasks:
-** Playbook: link:./tasks/pre_workload.yml[pre_workload.yml] - Runs pre-requisitie steps before installing Integreatly
+** Tasks: link:./tasks/pre_workload.yml[pre_workload.yml] - Runs pre-requisitie steps before installing Integreatly
 *** Clones the Integreatly https://github.com/integr8ly/installation[Github repository] into a specified installation directory
 *** Debug task will print out: `Pre-Workload tasks completed successfully.`
 
-** Playbook: link:./tasks/workload.yml[workload.yml] - Used to deploy Integreatly
+** Tasks: link:./tasks/workload.yml[workload.yml] - Used to deploy Integreatly
 *** Executes the Integreatly installer which installs a set of Middleware products on the target Openshift workshop cluster
 *** Debug task will print out: `Workload Tasks completed successfully.`
 
-** Playbook: link:./tasks/post_workload.yml[post_workload.yml] - Used to
+** Tasks: link:./tasks/post_workload.yml[post_workload.yml] - Used to
  configure the workload after deployment
 *** This role doesn't do anything here
 *** Debug task will print out: `Post-Workload Tasks completed successfully.`
 
-** Playbook: link:./tasks/remove_workload.yml[remove_workload.yml] - Used to
+** Tasks: link:./tasks/remove_workload.yml[remove_workload.yml] - Used to
  uninstall Integreatly
 *** Executes the Integreatly uninstall playbook
 *** Removes locally cloned Integreatly Github repository
@@ -41,7 +41,7 @@
   tags:
     - step007
   roles:
-    - { role: "{{ ANSIBLE_REPO_PATH }}/roles/{{ocp_workload}}", when: 'ocp_workload is defined' }
+    - { role: "{{ocp_workload}}", when: 'ocp_workload is defined' }
 
 ----
 NOTE: You might want to change `hosts: all` to fit your requirements
@@ -67,8 +67,7 @@ WORKLOAD="ocp-workload-integreatly"
 # a TARGET_HOST is specified in the command line, without using an inventory file
 ansible-playbook -i ${TARGET_HOST}, ./configs/ocp-workloads/ocp-workload.yml \
                  -e"ansible_ssh_private_key_file=~/.ssh/${SSH_PRIVATE_KEY}" \
-                 -e"ansible_ssh_user=${SSH_USER}" \
-                 -e"ANSIBLE_REPO_PATH=`pwd`" \
+                 -e"ansible_user=${SSH_USER}" \
                  -e"ocp_workload=${WORKLOAD}" \
                  -e"guid=${GUID}" \
                  -e"ocp_user_needs_quota=false" \
@@ -84,8 +83,7 @@ WORKLOAD="ocp-workload-integreatly"
 # a TARGET_HOST is specified in the command line, without using an inventory file
 ansible-playbook -i ${TARGET_HOST}, ./configs/ocp-workloads/ocp-workload.yml \
                     -e"ansible_ssh_private_key_file=~/.ssh/${SSH_PRIVATE_KEY}" \
-                    -e"ansible_ssh_user=${SSH_USER}" \
-                    -e"ANSIBLE_REPO_PATH=`pwd`" \
+                    -e"ansible_user=${SSH_USER}" \
                     -e"ocp_workload=${WORKLOAD}" \
                     -e"guid=${GUID}" \
                     -e"ACTION=remove"
@@ -107,7 +105,7 @@ ansible-playbook -i ${TARGET_HOST}, ./configs/ocp-workloads/ocp-workload.yml \
 ----
 [gptehosts:vars]
 ansible_ssh_private_key_file=~/.ssh/keytoyourhost.pem
-ansible_ssh_user=ec2-user
+ansible_user=ec2-user
 
 [gptehosts:children]
 openshift

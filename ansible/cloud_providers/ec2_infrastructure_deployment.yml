@@ -1,50 +1,101 @@
 ---
+- import_playbook: ec2_pre_checks.yml
+
 - name: Step 001.1 Deploy Infrastructure
   hosts: localhost
   connection: local
   gather_facts: false
   become: false
-  vars_files:
-    - "{{ANSIBLE_REPO_PATH}}/configs/{{ env_type }}/env_vars.yml"
-    - "{{ANSIBLE_REPO_PATH}}/configs/{{ env_type }}/env_secret_vars.yml"
   tags:
     - step001
     - step001.1
     - deploy_infrastructure
   tasks:
-    # for SSH first access to ec2 instances we always use the key defined in the CloudFormation
-    # template by the name {{key_name}}
-    # This variable is used when generation ssh config.
-    # - name: Get ssh pub key
-    #   tags:
-    #     - must
-    #   set_fact:
-    #     ssh_key: "~/.ssh/{{key_name}}.pem"
+    - name: Run infra-images
+      include_role:
+        name: infra-images
+
+    - name: Skip infra-aws-capacity-reservation (reservations already exist)
+      debug:
+        msg: >-
+          Skipping capacity reservation - valid reservations already exist
+          in {{ agnosticd_aws_capacity_reservation_results.region }}
+      when: >-
+        agnosticd_aws_capacity_reservation_results is defined
+        and agnosticd_aws_capacity_reservation_results.reservations | default({}) | length > 0
+
+    - name: Run infra-aws-capacity-reservation
+      when: >-
+        agnosticd_aws_capacity_reservation_results is not defined
+        or agnosticd_aws_capacity_reservation_results.reservations | default({}) | length == 0
+      include_role:
+        name: infra-aws-capacity-reservation
+      vars:
+        ACTION: provision
+
+    - when: >-
+        agnosticd_aws_capacity_reservation_results.reservations | default({}) | length > 0
+      block:
+        - name: Empty the agnosticd_images and run the detection again
+          set_fact:
+            agnosticd_images: {}
+
+        - name: Run infra-images again to use the proper region selected by the reservations
+          include_role:
+            name: infra-images
+
+    - name: Run infra-aws-open-environment Role
+      include_role:
+        name: infra-aws-open-environment
+      vars:
+        ACTION: provision
+      when: agnosticd_open_environment | default(false) | bool
+
+    - name: Create ssh provision key
+      include_role:
+        name: create_ssh_provision_key
+      when:
+        - instances | default([]) | length > 0
+        - ssh_provision_key_name is undefined
+
+    - name: Locate environment SSH key
+      include_role:
+        name: locate_env_authorized_key
+      when: instances | default([]) | length > 0
+
+    - name: Create keypair in ec2
+      include_role:
+        name: infra-ec2-ssh-key
+      when: instances | default([]) | length > 0
 
     - name: Run infra-ec2-template-generate Role
-      import_role:
-        name: "{{ ANSIBLE_REPO_PATH }}/roles/infra-ec2-template-generate"
+      include_role:
+        name: infra-ec2-template-generate
 
     - name: Run infra-ec2-template-create Role
-      import_role:
-        name: "{{ ANSIBLE_REPO_PATH }}/roles/infra-ec2-template-create"
+      include_role:
+        name: infra-ec2-template-create
       vars:
         aws_region_loop: "{{aws_region}}"
+      when: cloudformation_enabled | default(true) | bool
 
     - name: Run infra-ec2-template-create Role into FallBack region
       include_role:
-        name: "{{ ANSIBLE_REPO_PATH }}/roles/infra-ec2-template-create"
+        name: infra-ec2-template-create
       vars:
         aws_region_loop: "{{item}}"
       with_items: "{{ fallback_regions }}"
       when:
+        - cloudformation_enabled | default(true) | bool
         - fallback_regions is defined
         - cloudformation_out is failed
 
     - name: report Cloudformation error
       fail:
         msg: "FAIL {{ project_tag }} Create Cloudformation"
-      when: not cloudformation_out is succeeded
+      when:
+        - cloudformation_enabled | default(true) | bool
+        - not cloudformation_out is succeeded
       tags:
         - provision_cf_template
 
@@ -53,28 +104,39 @@
   connection: local
   gather_facts: false
   become: false
-  vars_files:
-    - "{{ ANSIBLE_REPO_PATH }}/configs/{{ env_type }}/env_vars.yml"
-    - "{{ ANSIBLE_REPO_PATH }}/configs/{{ env_type }}/env_secret_vars.yml"
   tags:
     - step001
     - step001.2
     - create_inventory
     - create_ssh_config
   tasks:
-    - name: Run infra-ec2-create-inventory Role
-      import_role:
-        name: "{{ ANSIBLE_REPO_PATH }}/roles/infra-ec2-create-inventory"
-    - name: Run Common SSH Config Generator Role
-      import_role:
-        name: "{{ANSIBLE_REPO_PATH}}/roles/infra-common-ssh-config-generate"
+    - when: create_ssh_config | default(true) | bool
+      block:
+        # Sometimes the infra step is skipped, for example when scaling up a cluster.
+        # when step001.1 is skipped, aws_region_final is not defined.
+        - when: aws_region_final is not defined
+          include_tasks: ec2_detect_region_tasks.yml
+
+        - name: Run infra-ec2-create-inventory Role
+          include_role:
+            name: infra-ec2-create-inventory
+
+        - name: Run Common SSH Config Generator Role
+          when:
+            - groups.bastions is defined
+            - groups.bastions | length > 0
+          include_role:
+            name: infra-common-ssh-config-generate
+
+# include global vars again, this time for all hosts now that the inventory is built
+- import_playbook: ../include_vars.yml
+  tags:
+    - create_inventory
+    - must
 
 - name: Step 001.3 Configure Linux Hosts and Wait for Connection
   hosts:
     - all:!windows:!network
-  vars_files:
-    - "{{ANSIBLE_REPO_PATH}}/configs/{{ env_type }}/env_vars.yml"
-    - "{{ANSIBLE_REPO_PATH}}/configs/{{ env_type }}/env_secret_vars.yml"
   gather_facts: false
   any_errors_fatal: true
   ignore_errors: false
@@ -90,28 +152,38 @@
         - create_inventory
       set_fact:
         aws_region_final: "{{hostvars['localhost'].aws_region_final}}"
-        ansible_ssh_extra_args: "{{ ansible_ssh_extra_args|d() }} -F {{ ANSIBLE_REPO_PATH }}/workdir/{{ env_type }}_{{ guid }}_ssh_conf"
+        ansible_ssh_extra_args: "{{ ansible_ssh_extra_args|d() }} -F {{output_dir}}/{{ env_type }}_{{ guid }}_ssh_conf"
 
     - name: Run infra-ec2-wait_for_linux_hosts Role
-      import_role:
-        name: "{{ ANSIBLE_REPO_PATH }}/roles/infra-ec2-wait_for_linux_hosts"
-    - name: Run infra-ec2-linux-set-hostname Role
-      import_role:
-        name: "{{ ANSIBLE_REPO_PATH }}/roles/infra-ec2-linux-set-hostname"
+      include_role:
+        name: infra-ec2-wait_for_linux_hosts
 
+    - name: Run infra-ec2-linux-set-hostname Role
+      include_role:
+        name: infra-ec2-linux-set-hostname
+
+    - name: Add authorized_keys
+      include_role:
+        name: ssh_authorized_keys
+      when: >-
+        ssh_authorized_keys | default([]) | length > 0
+        or
+        all_ssh_authorized_keys | default([]) | length > 0
 
 
 - name: Step 001.4 Configure Windows Hosts and Wait for Connection
   gather_facts: false
   hosts:
     - windows
-  vars_files:
-    - "{{ANSIBLE_REPO_PATH}}/configs/{{ env_type }}/env_vars.yml"
-    - "{{ANSIBLE_REPO_PATH}}/configs/{{ env_type }}/env_secret_vars.yml"
   tags:
     - step001
     - step001.4
   tasks:
+    - name: Set facts for Windows remote access
+      ansible.builtin.include_role:
+        name: infra-windows-connection-facts
+      when: infra_windows_connection_facts_type is defined
+
     - name: set facts for remote access
       tags:
         - create_inventory
@@ -119,13 +191,17 @@
         ansible_become: false
         ansible_connection: winrm
         ansible_host: "{{ public_dns_name }}"
-        ansible_password: "{{ windows_password | default(hostvars['localhost'].generated_windows_password) }}"
+        ansible_password: "{{ hostvars['localhost'].windows_password | default(hostvars['localhost'].generated_windows_password) }}"
         ansible_port: 5986
         ansible_user: Administrator
-        ansible_ssh_user: Administrator
         ansible_winrm_server_cert_validation: ignore
         aws_region_final: "{{hostvars['localhost'].aws_region_final}}"
+      when: infra_windows_connection_facts_type is not defined
 
     - name: Run infra-ec2-wait_for_linux_hosts Role
-      import_role:
-        name: "{{ ANSIBLE_REPO_PATH }}/roles/infra-ec2-wait_for_windows_hosts"
+      include_role:
+        name: infra-ec2-wait_for_windows_hosts
+
+    - name: Set output_dir for all windows hosts
+      set_fact:
+        output_dir: "{{ hostvars.localhost.output_dir }}"

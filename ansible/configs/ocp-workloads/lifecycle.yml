@@ -1,0 +1,25 @@
+---
+- name: Build inventory
+  ansible.builtin.import_playbook: post_infra.yml
+
+- name: Start or stop workload(s)
+  hosts: ocp_bastions
+  become: false
+  gather_facts: false
+  tags:
+    - step005
+  tasks:
+  - name: Fail if no action defined
+    when: ACTION is not defined or ACTION == ''
+    ansible.builtin.fail:
+      msg: ACTION must be defined
+
+  - name: Run Workloads to perform {{ ACTION }}
+    when: ACTION != 'start' and ACTION != 'stop'
+    include_role:
+      name: openshift_workloads
+    vars:
+      openshift_workloads: "{{ cluster_workloads }}"
+
+- name: Cleanup
+  ansible.builtin.import_playbook: cleanup.yml
